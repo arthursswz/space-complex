@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Space Complex</title>
+<style>
+:root{color-scheme:dark;--bg:#0c1220;--grid:#18233b;--axis:#2b3d63;--ink:#e8eefc;--dim:#8a99b8;--ship:#7df0d4;--rock:#b9a8ff;--sun:#ffc15e;--bullet:#ffffff;--danger:#ff7a8a;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:"Trebuchet MS","Segoe UI",system-ui,sans-serif}
+body{min-height:100vh;display:flex;flex-direction:column;align-items:center;gap:10px;padding:12px}
+h1{font-size:1.15rem;margin:0;font-weight:700;letter-spacing:.02em}
+h1 span{color:var(--dim);font-weight:400;font-size:.9rem;margin-left:8px}
+#wrap{position:relative;width:min(100%,900px);aspect-ratio:3/2}
+canvas{width:100%;height:100%;display:block;background:var(--bg);border:1px solid var(--axis);border-radius:6px}
+#ov{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:8px;background:rgba(12,18,32,.78);border-radius:6px;padding:16px}
+#ov h2{margin:0;font-size:1.6rem}
+#ov p{margin:0;color:var(--dim);max-width:46ch;line-height:1.5}
+#ov b{color:var(--ink)}
+.row{width:min(100%,900px);display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.box{border:1px solid var(--axis);border-radius:6px;padding:10px 12px;font-size:.88rem;line-height:1.6}
+.box h3{margin:0 0 4px;font-size:.9rem;color:var(--dim);font-weight:600}
+.m{font-family:"Courier New",monospace;color:var(--ship)}
+.k{color:var(--dim)}
+@media(max-width:640px){.row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<h1>Space Complex<span>toda a física em ℂ</span></h1>
+<div id="wrap">
+  <canvas id="c" width="900" height="600"></canvas>
+  <div id="ov"></div>
+</div>
+<div class="row">
+  <div class="box"><h3>Estado da nave (origem no planeta, Im para cima)</h3>
+    z = <span class="m" id="z"></span><br>
+    v = <span class="m" id="v"></span><br>
+    u = e<sup>iθ</sup> = <span class="m" id="u"></span>
+  </div>
+  <div class="box"><h3>Jogo</h3>
+    Pontos: <span class="m" id="sc">0</span> · Vidas: <span class="m" id="lv">3</span> · Onda: <span class="m" id="wv">1</span><br>
+    Gravidade 1/|z − z₀|²: <span class="m" id="gr">ligada</span><br>
+    <span class="k">← → girar · ↑ acelerar · espaço atirar · G gravidade · P pausa</span>
+  </div>
+</div>
+<script>
+// ---------- Álgebra complexa ----------
+class C{
+  constructor(re=0,im=0){this.re=re;this.im=im}
+  add(o){return new C(this.re+o.re,this.im+o.im)}
+  sub(o){return new C(this.re-o.re,this.im-o.im)}
+  mul(o){return new C(this.re*o.re-this.im*o.im,this.re*o.im+this.im*o.re)}
+  scale(k){return new C(this.re*k,this.im*k)}
+  conj(){return new C(this.re,-this.im)}
+  abs(){return Math.hypot(this.re,this.im)}
+  arg(){return Math.atan2(this.im,this.re)}
+  static exp(t){return new C(Math.cos(t),Math.sin(t))} // e^{it}
+}
+const fmt=(z,d=1)=>`${z.re.toFixed(d)} ${z.im<0?'−':'+'} ${Math.abs(z.im).toFixed(d)}i`;
+
+// ---------- Constantes ----------
+const W=900,H=600,TAU=Math.PI*2;
+const PLANET=new C(W/2,H/2),PR=26,GM=9e5;
+const TURN=4,THRUST=260,DRAG=0.75,BSPEED=520,BLIFE=1.1;
+const cv=document.getElementById('c'),g=cv.getContext('2d');
+const $=id=>document.getElementById(id);
+
+let state='menu',ship,bullets,rocks,score,lives,wave,gravity=true,cool=0;
+const keys={};
+
+function wrap(z){z.re=((z.re%W)+W)%W;z.im=((z.im%H)+H)%H;return z}
+function gravAcc(z){ // a = GM (z0 − z)/|z0 − z|³
+  const d=PLANET.sub(z),r=Math.max(d.abs(),30);
+  return d.scale(GM/(r*r*r));
+}
+function newShip(){return{z:new C(W/2,H/2+190),v:new C(0,0),u:new C(0,-1),inv:2.5}}
+function makeRock(size,z){
+  const r=[0,13,24,40][size],n=9,pts=[];
+  for(let k=0;k<n;k++)pts.push(C.exp(TAU*k/n).scale(r*(0.75+Math.random()*0.35)));
+  const sp=40+Math.random()*50;
+  return{size,r,z:z||new C(Math.random()<.5?0:W,Math.random()*H),
+    v:C.exp(Math.random()*TAU).scale(sp),u:new C(1,0),spin:C.exp((Math.random()-.5)*1.2/60),pts};
+}
+function spawnWave(){
+  rocks=[];
+  for(let i=0;i<3+wave;i++){
+    let z;do{z=new C(Math.random()*W,Math.random()*H)}while(z.sub(PLANET).abs()<120||z.sub(ship.z).abs()<150);
+    rocks.push(makeRock(3,z));
+  }
+}
+function reset(){score=0;lives=3;wave=1;bullets=[];ship=newShip();spawnWave();state='play';showOv()}
+
+// ---------- Atualização ----------
+function update(dt){
+  const s=ship;
+  // girar: u ← u · e^{iΔθ}
+  const turn=(keys.ArrowRight?1:0)-(keys.ArrowLeft?1:0);
+  if(turn){s.u=s.u.mul(C.exp(turn*TURN*dt));s.u=s.u.scale(1/s.u.abs())}
+  // acelerar: v ← v + a·u·dt
+  if(keys.ArrowUp)s.v=s.v.add(s.u.scale(THRUST*dt));
+  s.v=s.v.scale(Math.pow(DRAG,dt));
+  if(gravity)s.v=s.v.add(gravAcc(s.z).scale(dt));
+  s.z=wrap(s.z.add(s.v.scale(dt)));
+  s.inv=Math.max(0,s.inv-dt);
+  // tiro: nasce em z + L·u com velocidade v + s·u
+  cool-=dt;
+  if(keys.Space&&cool<=0){
+    bullets.push({z:s.z.add(s.u.scale(16)),v:s.v.add(s.u.scale(BSPEED)),t:BLIFE});cool=.22;
+  }
+  for(const b of bullets){
+    if(gravity)b.v=b.v.add(gravAcc(b.z).scale(dt*.5));
+    b.z=wrap(b.z.add(b.v.scale(dt)));b.t-=dt;
+  }
+  bullets=bullets.filter(b=>b.t>0&&b.z.sub(PLANET).abs()>PR);
+  for(const a of rocks){
+    if(gravity)a.v=a.v.add(gravAcc(a.z).scale(dt*.6));
+    a.z=wrap(a.z.add(a.v.scale(dt)));
+    a.u=a.u.mul(a.spin);
+  }
+  // colisão bala–pedra: |z1 − z2| < r1 + r2
+  const born=[];
+  for(const b of bullets)for(const a of rocks){
+    if(!a.dead&&!b.dead&&b.z.sub(a.z).abs()<a.r+2){
+      a.dead=b.dead=true;score+=[0,100,50,20][a.size];
+      if(a.size>1)for(let i=0;i<2;i++){
+        const c=makeRock(a.size-1,new C(a.z.re,a.z.im));
+        c.v=a.v.add(C.exp(Math.random()*TAU).scale(60));born.push(c);
+      }
+    }
+  }
+  rocks=rocks.filter(a=>!a.dead).concat(born);
+  bullets=bullets.filter(b=>!b.dead);
+  // colisão nave
+  const hitPlanet=s.z.sub(PLANET).abs()<PR+8;
+  const hitRock=s.inv<=0&&rocks.some(a=>a.z.sub(s.z).abs()<a.r+10);
+  if(hitPlanet||hitRock){
+    lives--;
+    if(lives<=0){state='over';showOv()}else ship=newShip();
+  }
+  if(!rocks.length){wave++;ship.inv=2;spawnWave()}
+}
+
+// ---------- Desenho ----------
+function css(n){return getComputedStyle(document.documentElement).getPropertyValue(n)}
+function poly(z,u,pts,col,fill){
+  g.beginPath();
+  pts.forEach((w,i)=>{const p=z.add(w.mul(u));i?g.lineTo(p.re,p.im):g.moveTo(p.re,p.im)});
+  g.closePath();g.strokeStyle=col;g.lineWidth=2;g.stroke();
+}
+const SHIP=[new C(16,0),new C(-11,-10),new C(-6,0),new C(-11,10)]; // vértices w_k (apontam para +Re)
+function draw(){
+  g.clearRect(0,0,W,H);
+  // grade e eixos do plano complexo
+  g.lineWidth=1;g.strokeStyle=css('--grid');g.beginPath();
+  for(let x=PLANET.re%50;x<W;x+=50){g.moveTo(x,0);g.lineTo(x,H)}
+  for(let y=PLANET.im%50;y<H;y+=50){g.moveTo(0,y);g.lineTo(W,y)}
+  g.stroke();
+  g.strokeStyle=css('--axis');g.beginPath();
+  g.moveTo(PLANET.re,0);g.lineTo(PLANET.re,H);g.moveTo(0,PLANET.im);g.lineTo(W,PLANET.im);g.stroke();
+  g.fillStyle=css('--dim');g.font='12px sans-serif';
+  g.fillText('Re',W-24,PLANET.im-6);g.fillText('Im',PLANET.re+6,14);
+  // planeta
+  const gl=g.createRadialGradient(PLANET.re,PLANET.im,PR*.4,PLANET.re,PLANET.im,PR*3);
+  gl.addColorStop(0,'rgba(255,193,94,.35)');gl.addColorStop(1,'rgba(255,193,94,0)');
+  g.fillStyle=gl;g.fillRect(PLANET.re-PR*3,PLANET.im-PR*3,PR*6,PR*6);
+  g.fillStyle=css('--sun');g.beginPath();g.arc(PLANET.re,PLANET.im,PR,0,TAU);g.fill();
+  if(state==='menu')return;
+  for(const a of rocks)poly(a.z,a.u,a.pts,css('--rock'));
+  g.fillStyle=css('--bullet');
+  for(const b of bullets){g.beginPath();g.arc(b.z.re,b.z.im,2.4,0,TAU);g.fill()}
+  if(state!=='over'&&(ship.inv<=0||Math.floor(ship.inv*10)%2)){
+    poly(ship.z,ship.u,SHIP,css('--ship'));
+    if(keys.ArrowUp){ // chama: atrás da nave
+      poly(ship.z,ship.u,[new C(-8,-4),new C(-18-Math.random()*8,0),new C(-8,4)],css('--danger'));
+    }
+  }
+}
+function hud(){
+  if(!ship)return;
+  const rel=z=>new C(z.re-PLANET.re,-(z.im-PLANET.im));
+  $('z').textContent=fmt(rel(ship.z),0);
+  $('v').textContent=fmt(new C(ship.v.re,-ship.v.im),0);
+  $('u').textContent=fmt(new C(ship.u.re,-ship.u.im),2);
+  $('sc').textContent=score;$('lv').textContent=lives;$('wv').textContent=wave;
+  $('gr').textContent=gravity?'ligada':'desligada';
+}
+
+// ---------- Interface ----------
+function showOv(){
+  const o=$('ov');
+  if(state==='play'){o.style.display='none';return}
+  o.style.display='flex';
+  const how='Cada movimento é uma operação em ℂ: girar é multiplicar por <b>e<sup>iΔθ</sup></b>, acelerar é somar <b>a·u</b>, e o planeta puxa com <b>(z₀ − z)/|z₀ − z|³</b>.';
+  if(state==='menu')o.innerHTML=`<h2>Space Complex</h2><p>${how}</p><p>Pressione <b>Enter</b> para jogar.</p>`;
+  if(state==='pause')o.innerHTML=`<h2>Pausado</h2><p>Pressione <b>P</b> para continuar.</p>`;
+  if(state==='over')o.innerHTML=`<h2>Fim de jogo</h2><p>Você fez <b>${score}</b> pontos e chegou à onda ${wave}.</p><p>Pressione <b>Enter</b> para jogar de novo.</p>`;
+}
+addEventListener('keydown',e=>{
+  if(['ArrowLeft','ArrowRight','ArrowUp','Space'].includes(e.code))e.preventDefault();
+  keys[e.code]=true;
+  if(e.code==='Enter'&&(state==='menu'||state==='over'))reset();
+  if(e.code==='KeyP'&&(state==='play'||state==='pause')){state=state==='play'?'pause':'play';showOv()}
+  if(e.code==='KeyG')gravity=!gravity;
+});
+addEventListener('keyup',e=>{keys[e.code]=false});
+
+let last=performance.now();
+function loop(t){
+  const dt=Math.min((t-last)/1000,1/30);last=t;
+  if(state==='play')update(dt);
+  draw();hud();
+  requestAnimationFrame(loop);
+}
+showOv();requestAnimationFrame(loop);
+</script>
+</body>
+</html>
